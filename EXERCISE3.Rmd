@@ -1,0 +1,197 @@
+---
+title: "Exercise 3"
+author: "Emma Muhr"
+date: "2023-03-26"
+output: html_document
+---
+
+```{r loadpackages, warning = FALSE}
+
+library(tidyverse)
+library(kernlab)
+library(dbscan)
+library(clValid) # For selecting cluster method and number of clusters
+library(factoextra) # for cluster fitting and visualization
+library(uwot) # For UMAP dimensionality reduction 
+library(patchwork) # For arranging multiple plots
+
+set.seed(888) # To ensure consistent results from non-deterministic procedures
+rm(list = ls()) # Removes all variables
+
+```
+
+# begin question 3
+```{r dataframe, warning = FALSE, message = FALSE}
+compas.df = read_csv("https://raw.githubusercontent.com/propublica/compas-analysis/master/compas-scores.csv")
+
+# select columns
+compas.df <- compas.df %>% select(id, age, days_b_screening_arrest,
+                                  juv_fel_count, , juv_misd_count, juv_other_count, priors_count)
+colnames(compas.df)
+compas.df %>% skimr::skim() # Check the skim results to identify missing data
+
+#scaling
+scaled_compas.df = compas.df %>% 
+  drop_na() %>%  
+  scale() %>% as.data.frame() 
+
+# omit na values in rows
+na.omit(scaled_compas.df)
+
+#select 400
+sample_compas.df = scaled_compas.df %>% sample_n(size = 200)
+sample_compas.df
+
+```
+
+
+# begin question 4
+
+#INTERNAL VALIDITY
+```{r clValidInternal}
+
+## Internal metrics
+internal.cl = clValid(sample_compas.df, 
+                  nClust = 2:10, 
+                  clMethods = c("kmeans","pam", "agnes", "diana"),
+                  maxitems = 1000, # specifies the number of cases considered
+                  validation = "internal")
+
+## View internal metrics   
+summary(internal.cl)
+plot(internal.cl)
+
+
+```
+#STABILITY VALIDITY
+```{r clValidStability}
+
+## Stability  metrics
+stability.cl = clValid(sample_compas.df, 
+                nClust = 2:10, 
+                clMethods = c("kmeans","pam", "agnes", "diana"),
+                maxitems = 1700, # specifies the number of cases considered
+                validation = "stability")
+
+## View stability metrics
+summary(stability.cl)
+plot(stability.cl)
+
+```
+
+
+# BEGIN QUESTION 5
+
+#GAP METHOD
+```{r, cluster_estimation}
+
+compas_gap.df = eclust(sample_compas.df, 
+                    FUNcluster = "agnes", 
+                    k = 2,
+                    seed = 888)
+
+# Silhouette plot
+fviz_silhouette(compas_gap.df)
+
+```
+
+
+# BEGIN QUESTION 6
+
+# CLUSTER MEMBERSHIP
+
+```{r final_fit}
+
+compas_gap.df = eclust(sample_compas.df, 
+       FUNcluster = "agnes", 
+       k = 2 ,
+       hc_metric = "euclidean", hc_method = "ward.D2", # Distance metric and aglomeration method
+       seed = 888)
+
+# Silhouette plot
+fviz_silhouette(compas_gap.df)
+
+# Dendrogam plot
+fviz_dend(compas_gap.df) 
+
+# Plot cluster membership in PCA space
+fviz_cluster(compas_gap.df)
+
+```
+# BEGIN QUESTION 7
+
+# UMAP
+
+```{r umapcluster}
+
+## Apply umap to data
+umap.df = umap(sample_compas.df, n_neighbors = 50, n_components = 2) %>% scale()
+colnames(umap.df) = c("umap1", "umap2")
+umap.df = as.data.frame(umap.df)
+
+umap.plot = ggplot(umap.df, aes(umap1, umap2)) + 
+  geom_point(size = .5) +
+  labs(title = "UMAP-transformed data") +
+  theme_bw() 
+umap.plot
+
+sample_compas.df = cbind(sample_compas.df, umap.df)
+
+## More components capture more information
+umap4.df = umap(sample_compas.df, n_neighbors = 50, n_components = 4) %>% scale()
+
+## Cluster based on UMAP data
+internal.cl = clValid(umap4.df, 
+                  nClust = 2:15, 
+                  clMethods = c("kmeans", "pam", "agnes", "diana"),
+                  maxitems = 1700,
+                  validation = "internal")
+
+## View internal metrics   
+summary(internal.cl)
+plot(internal.cl)
+
+## Cluster based on UMAP data
+stability.cl = clValid(umap4.df, 
+                  nClust = 2:15, 
+                  clMethods = c("kmeans", "pam", "agnes", "diana"),
+                  maxitems = 1700,
+                  validation = "stability")
+
+## View internal metrics   
+summary(stability.cl)
+plot(stability.cl)
+
+
+## UMAP and kmeans
+umap.compas.kmean = eclust(umap.df, 
+       FUNcluster = "kmeans", 
+       k = 8,
+       seed = 888)
+  
+
+sample_compas.df = cbind(sample_compas.df, cluster = as.factor(umap.compas.kmean$cluster))
+
+km_umap.plot = 
+  ggplot(sample_compas.df, aes(umap1, umap2, colour = cluster)) + 
+  geom_point(size = 1) + 
+  labs(title = "Kmeans clustering based on UMAP transformed data", x = "", y = "") +
+  theme_bw() + 
+  theme(legend.position = "none") 
+
+km_umap.plot
+
+## Hierarchical density based clustering is very sensitive to the minimum number of points
+sample_compas.df$hdb.cluster = hdbscan(as.matrix(umap4.df), minPts = 15)$cluster %>%    
+  as.factor()
+
+hdbscan.plot = 
+  ggplot(sample_compas.df, aes(umap1, umap2, colour = hdb.cluster)) + 
+  geom_point(size = 1) + 
+  labs(title = "HDBscan clustering based on UMAP transformed data", x = "", y = "") +
+  theme_bw() + 
+  theme(legend.position = "none") 
+hdbscan.plot
+
+```
+
