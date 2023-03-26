@@ -1,0 +1,290 @@
+---
+title: "Exercise_2_ISYE562"
+output: html_document
+date: "2023-03-09"
+name: "Emma Muhr
+---
+
+```{r setup}
+library(tidyverse)
+library(skimr)
+library(ggforce)
+library(caret) # Tools and common interface to many supervised learning algorithms
+library(patchwork) # For combining multiple plots
+library(plotROC)
+library(pROC)
+
+set.seed(888) # To ensure consistent results from non-deterministic procedures
+rm(list = ls()) # Removes all variables
+```
+
+
+
+# read data, proof it 
+```{r dataframe, warning = FALSE, message = FALSE}
+compas.df = read_csv("https://raw.githubusercontent.com/propublica/compas-analysis/master/compas-scores.csv")
+ 
+colnames(compas.df) <- make.names(colnames(compas.df), unique=TRUE)
+
+#question 3
+
+complete.cases(compas.df)
+
+sapply(compas.df, function(x) sum(is.na(x)))
+
+compas.df = compas.df %>% select_if(~ !any(is.na(.)))
+na.omit(compas.df)
+
+```
+
+## reoffend.df = recid_compas.df, will_reoffend = yes_recid
+## Define class variable--is_recid > 0
+```{r define-class, echo = TRUE, warning=FALSE, message=FALSE, out.width="60%"}
+# begin question 4 section
+recid_compas.df = compas.df %>% mutate(yes_recid = if_else(is_recid > 0, "yes", "no")) %>% 
+  mutate(yes_recid = as.factor(yes_recid))
+
+
+
+```
+
+
+## goodwine = yes_recid, quality = is_recid, quality.wine.df = recid_compas.df
+## Partition data into training and testing
+```{r mess_with_data}
+
+compas.df = recid_compas.df %>% select(-is_recid) %>% select(age, sex, juv_fel_count, juv_misd_count, priors_count, score_text, is_violent_recid, decile_score...12, decile_score...45, yes_recid)
+
+
+
+```
+
+
+```{r partition}
+
+## Creates a random sample of rows for training
+inTrain = createDataPartition(compas.df$yes_recid, p = 3/4, list = FALSE) 
+
+## Create dataframes of descriptive variables for training and testing
+# Slice extracts rows based on vector of row numbers
+
+#
+trainDescr = compas.df %>% slice(inTrain) %>% select(-yes_recid)
+testDescr = compas.df %>% slice(-inTrain) %>% select(-yes_recid)
+
+#
+trainClass = compas.df %>% slice(inTrain) %>% select(yes_recid) %>% as.matrix() %>% as.factor()
+testClass = compas.df %>% slice(-inTrain) %>% select(yes_recid) %>% as.matrix() %>% as.factor()
+
+## Proportion of good and bad cases should be the same in testing and training
+# Ideally the classes should be balanced
+compas.df %>% select(yes_recid) %>%  table() %>% prop.table() %>% round(3)*100 
+
+trainClass %>% table() %>% prop.table() %>% round(3)*100
+
+testClass %>% table() %>% prop.table() %>% round(3)*100
+
+```
+
+
+
+
+
+```{r class_imbalance}
+#There's way more negatives than positives as seen in the 68.5% no and 31.5% yes
+```
+
+##begin question 5 with scaling
+
+```{r pre-process, cache=FALSE, warning=FALSE, message=FALSE}
+
+## Trans.mod is a transformation model that is trained and the applied to the data
+Trans.mod = preProcess(trainDescr, method = c("center", "scale")) 
+trainScaled = predict(Trans.mod, trainDescr)
+testScaled = predict(Trans.mod, testDescr)
+
+## Plot transformed data
+raw.plot = ggplot(trainDescr, aes(priors_count)) + geom_histogram(bins = 60) + labs(title = "Original")
+
+scaled.plot = ggplot(trainScaled, aes(priors_count)) + geom_histogram(bins = 60) + labs(title = "Scaled")
+
+(raw.plot / scaled.plot) # Using patchwork package
+
+
+```
+Similarities: same y values and same general exponential distribution
+Differences: the range of the x values are different. the original values are from [0,40] while the scaled one is from around [-1, 7.5]
+
+## begin question 6 section
+
+```{r tune, warning = FALSE}
+train.control = trainControl(method = "repeatedcv", 
+                             number = 10, repeats = 3, # number: number of folds
+                             search = "grid", # for tuning hyperparameters
+                             classProbs = TRUE, # return probability of prediction
+                             savePredictions = "final",
+                             summaryFunction = twoClassSummary
+                             )
+
+glm.fit = train(x = trainScaled, y = trainClass,
+   method = 'glm', metric = "ROC",
+   trControl = train.control) 
+
+glm.fit
+```
+
+```{r train_svm, cache = TRUE, echo=TRUE, warning=FALSE}
+
+grid = expand.grid(C = c(.1, .2, .4, 1, 2, 4))
+
+svm.fit =  train(x = trainScaled, y = trainClass,
+  method = "svmLinear", 
+  metric = "ROC",
+  tuneGrid = grid, # Overrides tuneLength
+  tuneLength = 3, # Number of levels of each hyper parameter, unless specified by grid
+  trControl = train.control, 
+  scaled = TRUE
+  )
+
+plot(svm.fit)
+
+```
+
+
+```{r train_xgb, cache=TRUE, warning=FALSE, message=FALSE}
+
+xgb.fit = train(x = trainScaled, y = trainClass,
+  method = "xgbTree", metric = "ROC",
+  tuneLength = 3, # Depends on number of parameters in algorithm
+  trControl = train.control, scaled = TRUE)
+
+plot(xgb.fit)
+
+```
+
+
+```{r comparing models}
+glm.pred = predict(glm.fit, testScaled) 
+
+confusionMatrix(glm.pred, testClass)
+
+svm.pred = predict(svm.fit, testScaled)
+
+confusionMatrix(svm.pred, testClass)
+```
+
+## Assess performance: Confusion matrix (glm)
+Use trained model to predict on the4 unseen test data
+
+```{r assess-glm}
+
+glm.pred = predict(glm.fit, testScaled) 
+
+confusionMatrix(glm.pred, testClass)
+
+```
+
+
+## Assess performance: Confusion matrix (svm)
+```{r assess-svm}
+
+svm.pred = predict(svm.fit, testScaled)
+
+confusionMatrix(svm.pred, testClass)
+
+```
+
+
+## Assess Performance: Confusion matrix (xgb)
+```{r assess-xgb}
+
+xgb.pred = predict(xgb.fit, testScaled)
+
+confusionMatrix(xgb.pred, testClass)
+
+```
+
+## begin question 7 section ##############################################
+## Compare models
+This function resamples the 10-fold cross validation outcome for the best model parameters.
+
+```{r compare_boxplot, cache=TRUE}
+
+mod.resamps = resamples(list(glm = glm.fit, svm = svm.fit, xgb = xgb.fit))
+
+# dotplot(mod.resamps, metric="ROC")
+
+bwplot(mod.resamps, metric = "ROC")
+
+```
+
+
+## Assess performance (xgb): ROC plot
+The ROC plot provides a more detailed comparison of models across the of decision thresholds.
+
+```{r assess_ROC, warning=FALSE, message= FALSE}
+
+## Use model to generate predictions
+xgb.pred = predict(xgb.fit, testScaled, type = "prob")
+glm.pred = predict(glm.fit, testScaled, type = "prob")
+
+## Add prediction and observed to test predictors
+predicted.wine.df = quality.wine.df %>% slice(-inTrain) %>% 
+  cbind(glm.pred.good = glm.pred$good) %>% 
+  cbind(xgb.pred.good = xgb.pred$good) %>% 
+  cbind(obs = testClass)
+
+## Calculate ROC coordinates and area under curve (AUC)
+glm.roc = roc(predictor = predicted.wine.df$glm.pred, 
+              response = predicted.wine.df$obs, 
+              AUC = TRUE, ci = TRUE)
+
+xgb.roc = roc(predictor = predicted.wine.df$xgb.pred, 
+              response = predicted.wine.df$obs, 
+              AUC = TRUE, ci = TRUE)
+
+glm.roc$auc
+glm.roc$ci
+
+
+## Plot ROC
+xgb_glm.roc.plot = 
+ggplot(data = predicted.wine.df, aes(d = obs, m = glm.pred.good)) + 
+  geom_abline(colour = "grey60") +
+  geom_roc(labels = FALSE, linealpha = .5, pointalpha = .5) + # Labels show the predictor value
+  geom_roc(aes(d = obs, m = xgb.pred.good),
+           labels = FALSE, linealpha = .8, pointalpha = .8) + # Labels show the predictor value
+   annotate("text", x = .5, y = .475, hjust = 0,
+           label = paste("AUC(xbg) =", round(xgb.roc$auc, 2))) +
+   annotate("text", x = .5, y = .375, hjust = 0,
+           label = paste("AUC(glm) =", round(glm.roc$auc, 2))) +
+  labs(title = "Prediction of good and bad wines", 
+       subtitle = "Extreme gradient boosting predictions (xgboost)") +
+  coord_equal() +
+  style_roc() 
+  
+xgb_glm.roc.plot
+ggsave("xgb_glm-roc.png", xgb_glm.roc.plot, width = 5, height = 4.5)
+
+
+```
+
+
+## Compare xgboost predictions with observed ratings of wine quality
+```{r xgb-pred-plot}
+
+predicted_wine.plot = 
+  ggplot(predicted.wine.df, aes(as.factor(quality), xgb.pred.good, colour = goodwine)) + 
+  geom_sina(size = .5) +
+  labs(title = "Prediction of good and bad wines", 
+       subtitle = "Extreme gradient boosting predictions (xgboost)",
+       x = "Rated quality",
+       y = "Predicted probabilty the wine is good") +
+  theme_gray(base_size = 14) +
+  theme(legend.position = "bottom") 
+predicted_wine.plot
+
+ggsave(filename = "predicted_wine.png", plot = predicted_wine.plot, 
+       width = 5, height = 4.5)
+
+```
